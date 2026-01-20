@@ -551,6 +551,7 @@ apt-get install tigervnc-standalone-server tigervnc-common
 - 卡在锁屏界面需要输密码
 	`vncserver -kill :1`
 	- 更新配置禁用锁屏
+
 ```
 # 1. 停止当前 VNC 进程
 vncserver -kill :1
@@ -584,7 +585,7 @@ vncserver -kill :1 cat <<EOF > ~/.vnc/xstartup #!/bin/sh unset SESSION_MANAGER u
 
 Turbo VNC 连接 localhost::5901
 
-密码 JunyiFan1216
+密码 {VNCpasswd}
 ```
 
 ![[gleam3.png]]
