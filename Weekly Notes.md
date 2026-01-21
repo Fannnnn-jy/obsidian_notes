@@ -102,7 +102,7 @@ $$J^{CLIP}(\theta) = \mathbb{E}_t \left[ \min(r_t(\theta)\hat{A}_t, \text{clip}(
 > repo： https://github.com/leggedrobotics/rsl_rl
 > arXiv： https://arxiv.org/pdf/2509.10771
 
-![[截屏2026-01-15 01.56.49.png]]
+![[rsl_rl.png]]
 
 - **Features**:
 	- PPO and Teacher-Student Learning
@@ -310,7 +310,7 @@ Description of the main modules are as follows:
 
 ### Framework:
 
-![[截屏2026-01-15 17.52.53.png]]
+![[VGGT.png]]
 
 - formulation：$$f(I_i)_{i=1}^N = (g_i, D_i, P_i, T_i)_{i=1}^N$$
 	- input：n张图
@@ -497,6 +497,21 @@ $$r^{t+1}_{CR} = CR_{t+1} - CR_t$$
 - 危险探索负奖励（惩罚）：如果预测的目标点在观测区域内，且会发生碰撞，直接执行 Re-planning，但即使如此也要吃一个惩罚: $r_t^{Collision} = -1$ if collision, else 0
 - 终止探索奖励：覆盖率达到 75% （90%？这块在说啥没看懂）$r_t^{Termination} = +1$ if terminate, else 0
 
+
+#### GLEAM Related Works
+> 主要是以coverage为目标的重建
+
+- 论文 related works：
+	- Active Mapping
+		- Frontier-based exploration (FBE) policies
+		- Information gain-based policies
+	- Existing benchmarks
+	- Generalizability
+- 论文 baseline：ANM, OccAnt
+
+> 由于这部分感觉还挺多有意思的文章，遂决定单独开一个笔记来记录一下
+
+
 ### 复现
 - Device Requirements
 	- NVIDIA RTX 3090/4090 (24GB VRAM)
@@ -540,6 +555,7 @@ Host ry3.9gpu.com
 	Port 21019
 ```
 
+#图形化界面
 - `vncserver: command not found` 解决方案：
 
 ```
@@ -574,6 +590,7 @@ vncserver :1
 	`apt-get update`
 	`apt-get install xfce4 xfce4-goodies -y`
 	- 更新配置重新打开
+
 ```
 vncserver -kill :1 cat <<EOF > ~/.vnc/xstartup #!/bin/sh unset SESSION_MANAGER unset DBUS_SESSION_BUS_ADDRESS # 修复部分系统下启动黑屏的问题 [ -x /etc/vnc/xstartup ] && exec /etc/vnc/xstartup [ -r $HOME/.Xresources ] && xrdb $HOME/.Xresources xsetroot -solid grey # 启动 xfce 核心服务 startxfce4 & EOF chmod +x ~/.vnc/xstartup vncserver :1
 ```
@@ -590,7 +607,7 @@ Turbo VNC 连接 localhost::5901
 
 ![[gleam3.png]]
 
-
+- 复现过程还有一个 tricky 的事情，权重参数要传入 .zip 路径，如果网盘直接下载是文件夹，自己压缩回去可能会报错。这时候直接下载母文件夹，然后单独复制这个 .zip 就好
 ## 1.6 重新整理 TODO List 剩余部分 (1.17 Saturday)
 
 - GPU-free：
@@ -608,7 +625,7 @@ Turbo VNC 连接 localhost::5901
 - GPU-required：
 	- 主机配置（还剩下 ToDesk部分）（等待主机修复）
 	- GLEAM 复现 ✅
-	- rsl_rl ppo 训练一个标准强化学习任务 dm-control walker-walk (reward curve 上涨到快1000)
+	- rsl_rl ppo 训练一个标准强化学习任务 dm-control walker-walk (reward curve 上涨到快1000) ✅
 	- rsl_rl ppo on gleam-like task
 		- input: rgb / depth image
 		- output: camera view
@@ -644,7 +661,97 @@ not finished
 
 
 > 1.20 讨论更新：重点在于熟悉 rsl_rl 库运行的 ppo pipeline，遂考虑放弃 dm_control ，用更简单的 gymnasium；fs哥提供了一个 demo 脚本 https://pastebin.com/eUfSGJPR  针对 rsl_rl ppo + gym hopper 
+> todo：复现脚本结果，拓展 RGB based 代码
 
+### 1.8.1 param - based hopper
 - 复现结果：发现训练很不稳定，1000 步平均 reward 最多上涨到 600，又跌回 300 
 	- 调整参数 init_noise_std: float = 0.2 （原脚本 1.0） # 初始动作噪声，较低的噪声有助于物理平衡任务初期稳定
 	- schedule: str = "adaptive" （原来使用 fixed） # 这里 adaptive 是一个近 penalty 但实际上并不一样的更新策略，具体在本周学习 rsl_rl 库笔记中记录了代码
+
+	- 经过以上两种修改，1000 轮训练耗时 ～29min 效果如下
+```
+                          Learning iteration 999/1000                            
+                            Total steps: 2048000 
+                       Steps per second: 1132 
+                        Collection time: 0.631s 
+                          Learning time: 1.178s 
+                        Mean value loss: 193.3120
+                    Mean surrogate loss: -0.0051
+                      Mean entropy loss: -1.9715
+                            Mean reward: 1300.70
+                    Mean episode length: 441.78
+                  Mean action noise std: 0.13
+                         Mean episode r: 192.4580
+                        Mean episode _r: 0.1250
+                         Mean episode l: 61.8750
+                        Mean episode _l: 0.1250
+                         Mean episode t: 0.4105
+                        Mean episode _t: 0.1250
+--------------------------------------------------------------------------------
+                         Iteration time: 1.81s
+                           Time elapsed: 00:29:18
+                                    ETA: 00:00:00
+                                    
+--- eval.py output 步数 = 518, 总奖励 = 1573.62
+```
+
+以上训练效果如下图：
+![[hopper-1000steps.mp4]]
+
+### 1.8.2 RGB - based hopper
+> 从参数（11 元 vector）观测到 RGB (3 * H * W) 观测
+
+```
+<RecordEpisodeStatistics<TimeLimit<OrderEnforcing<PassiveEnvChecker<HopperEnv<Hopper-v4>>>>>> # demo.py 代码中包裹得到的最终 env wrapper
+```
+
+- Question：应该先 wrap 图像还是 statistic？
+	- 进一步的思考：归根结底 statistic 应该还是基于十一元参数计算得到的（也就是说即使策略变成基于 RGB，由于奖励函数并不是纯粹的来自于 RGB 转化，这种策略近似一种特权观测？）；最理想情况是否是 RGB to reward 也被 well-pretrained？
+	- 理解有错，实际上奖励是环境里定义的，而 obs 才是 agent 真正得到的内容，如果 actor or critic 得到除了真实环境能得到的，才称为特权观测。在这个任务里不存在，把奖励传出来就好。
+
+- 遇到的问题与解决：
+	- `class CustomActorCritic_CNN(ActorCriticCNN):` 继承后覆盖一些函数，因为注意到原来的 `ActorCriticCNN` 是同时包含 MLP 和 CNN 两个部分，接受 RGB 和 原来的参数两种输入，覆盖直接删掉原来参数处理流程
+	- `train_config` 的修改：
+```
+	"obs_groups": {
+		"policy": ["obs"], # 没有 policy_2d 这种东西，AI 在扯淡
+		"critic": ["obs"], #
+	},
+	"policy": {
+		"class_name": cfg.policy.class_name,
+		"init_noise_std": cfg.policy.init_noise_std,
+		"actor_hidden_dims": cfg.policy.actor_hidden_dims,
+		"critic_hidden_dims": cfg.policy.critic_hidden_dims,
+		"activation": cfg.policy.activation,
+		"actor_cnn_cfg": {
+			"obs": {
+				'kernel_size': [8, 4, 3],
+				'output_channels': [32, 64, 64],
+				'stride': [4, 2, 1],
+			}
+		},
+		"critic_cnn_cfg": {
+			"obs": {
+				'kernel_size': [8, 4, 3],
+				'output_channels': [32, 64, 64],
+				'stride': [4, 2, 1],		
+			}
+		}
+	},
+```
+
+- 最终训练过程输出如下：
+	- 除了速度比较慢也没什么不好的，八百多轮训到了 500 左右 rewards
+	- 写了一个渲染脚本，发现也确实在学了，这个任务差不多（？）
+
+![[train_rgb_hopper.png]]![[hopper_rgb_700steps.mp4]]
+
+
+
+### 1.8.3 rsl_rl ppo on gleam-like task
+- problem settings
+	- input: rgb / depth image
+	- output: camera view
+	- policy: cnn （重点：处理不定长序列）（ possible solution：max pooling）(vggt)
+	- reward: coverage (depth -> point cloud -> voxelize)
+	- 理解：cnn 作为 baseline 的方法
