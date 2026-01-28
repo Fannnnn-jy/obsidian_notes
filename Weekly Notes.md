@@ -543,6 +543,11 @@ $$r^{t+1}_{CR} = CR_{t+1} - CR_t$$
 	- （未解决）当前卡在主机网络出了一些问题（1.16 最后情况是：链接有时候会卡，ping可以连网页，但是如果conda create环境会超时，然后多试了几次就会直接与主机断联）
 		- 师兄在排查
 
+```
+	pip install torch==2.0.0+cu118 torchvision==0.15.1+cu118 torchaudio==2.0.1+cu118 \
+	-i https://mirrors.huaweicloud.com/repository/pypi/simple \
+	--extra-index-url https://download.pytorch.org/whl/cu118
+```
 #### 路径 - 3 闪电算力 成功！✅
 > www.9gpu.com
 
@@ -755,3 +760,188 @@ not finished
 	- policy: cnn （重点：处理不定长序列）（ possible solution：max pooling）(vggt)
 	- reward: coverage (depth -> point cloud -> voxelize)
 	- 理解：cnn 作为 baseline 的方法
+
+
+
+# W2 2026.1.22 ~ 1.28
+
+> 以下内容计划摘自飞书
+
+- 1.22-1.28: 
+    - 我：初步完成VGGT在maniskill上的仿真实验
+    - junyi：初步复现类GLEAM的实验作为baseline
+- 1.29-2.4：
+    - 我：确定最终的rl env setting（reward设置，termination条件）
+    - 我：开始写paper，完成intro和method部分初稿
+    - junyi：整理更多的仿真场景数据
+- 2.5-2.11：
+    - 我：把VGGT在maniskill上的仿真实验scale up到更多仿真场景
+    - 我：写完intro和method
+    - junyi：帮我跑更多实验
+- 2.11-2.18：视为春节先去掉一周，可以后台挂上跑实验，写写related work
+- 2.19-2.25：跑实验，写experiment部分
+- 2.26-3.4：跑实验，写experiment部分
+- 3.4-3.6：最后完善paper
+
+## 2.0 我的本周TODO：
+
+- 初步实现 GLEAM 作为 baseline 的参考
+	- 首先实现一个简单框架
+		- input: depth
+		- reward: 2d 方格覆盖率
+		- action space: 固定z轴
+	- 进一步的，实现和我们最终 problem setting 比较接近的 baseline
+
+## 2.1 初步版本（游走块数）
+
+- 根据已经实现的 hopper 结合 GLEAM，发现问题：rsl_rl 的 ActorCriticCNN 代码是在新库中具有的特性，需要 python 3.9 + 但是 Isaac gym 需要 python 3.9 -
+	- 尝试放弃 Isaac gym 直接编写 maniskill
+
+- todo list：
+	- Maniskill 读取 GLEAM bench 数据，可视化看看
+	- 建立 maniskill based env，实现 env 应该包含的功能：
+		- obs
+		- step
+		- rewards
+	- 完善 ActorCritic，需要可以接受任意多张深度图
+
+> 1.24 讨论更新
+- 完善碰撞逻辑和坐标索引 ✅
+- 网络支持输入所有历史深度
+	- 可以都试试 RNN-like
+-  奖励 3d coverage
+- 3d 重建质量 metrics
+-  原论文的一些优先探索frontier、随机初始化、长路径约束之类的trick
+- 遇到的问题与解决
+	- maniskill 库名称叫 mani_skill ......
+	- 恒定 z 轴高度的时候，camera pose 被错误不小心恒定成朝下了，导致深度一直恒定
+
+
+### 2.1.1 先调试 maniskill3 读场景图效果
+
+- 四元数看理论的时候感觉有点费劲没想明白，所以一直想仰仗 ai 来搞这块逻辑，后来发现还不如手搓，这里好不容易调出来了一个靠谱的结果，但感觉 90 和 270 似乎是纯粹的翻转关系，好像不太对
+	![[gleam_baseline1.png]]
+	- 研究了很久，最后发现不用那么复杂的四元数逻辑，反正事实上只需要绕着 z 轴转相机拍前后左右，复杂的后面再说。而且 codex 一直坚持 sapien 库用的四元数是 `(x, y, z, w)`，经过很多轮可视化确定并非，而是正常的 `(w, x, y, z)`
+```
+def _quat_from_yaw(yaw_rad: float) -> Tuple[float, float, float, float]:
+	"""
+	直接构造绕 Z 轴旋转的四元数 (W-XYZ 格式)
+	Yaw 0 对应于相机初始朝向
+	"""
+	w = math.cos(yaw_rad / 2.0)
+	z = math.sin(yaw_rad / 2.0)
+	# 返回 (w, x, y, z)
+	return (w, 0.0, 0.0, z)
+```
+![[gleam_baseline2.png]]
+四个视角的可视化完成！
+但随即发现下一个问题：
+- 右边的俯视可视化和左边深度错位了，这会导致碰撞判断有严重问题![[截屏2026-01-23 18.04.19.png]]
+- 把视点固定到 (0, 0) 可以看出来上图存在的问题是对 x、y 轴的定义存在不一致：理应指向 x 正半轴的左上角指向的是下
+
+- 解决：
+	- 上述定义不一致只需要简单的转动就好了 `quat_wxyz = _quat_from_yaw(yaw_rad + math.pi / 2.0)`
+	- 但后续又产生了 y 轴反向的问题，发现是因为 cv2 的定义中 y 轴就是冲下的
+	- 上面全是扯淡，修修补补最后搞出来个左手系逆大天
+
+> 和 fs 哥讨论更新：世界坐标系有标准定义，相机坐标系有以下几种
+![[94d593528cd80296ff615dfab0e82dce.png]]
+> 坐标系转换代码参考： https://isaac-sim.github.io/IsaacLab/main/_modules/isaaclab/utils/math.html#convert_camera_frame_orientation_convention
+> 注意：如果depth map反投影到point cloud的话，如果不加任何变换，应该对应的是opencv/ros的格式（本阶段不涉及）
+
+> 1.27 讨论更新
+- 讨论准备：
+	- 当前效果：三维体素
+	- 输入参数（如转角、相对位置等）
+	- 奖励设定
+	- 旋转角度逻辑
+- 接下来的 todo
+	- 更大的 voxel
+	- 相机覆盖 voxel reward 而不只是相机位置
+	- better result showing （wandb）
+	- max pooling
+	- 更远：整理一些 synthetic 数据（渲染）
+### 2.1.2 代码功能实现
+
+### 2.1.3 训练问题
+> 在简单的二维 patch + 占用面积框架下，我尝试了几种试验，其中包括网络输入、架构、初始化、奖励设置等，结果不怎么好，可能是2000步（～600000 steps）太少了
+
+- 网络输入
+	- 单视角深度图
+	- 单视角深度序列
+	- 四个固定视角深度图
+- 网络结构
+	- cnn（对固定长度
+	- rnn（不定长
+- 奖励
+	- step rewards
+	- patch rewards
+	- crash penalty
+
+| 网络结构 | 网络输入   | 初始化   | 奖励设置   | 效果        | 思考        |
+| :--- | :----- | :---- | ------ | --------- | --------- |
+| CNN  | 方向固定单目 | 随机初始化 | etc    | 烂         | 显然不行，脑子抽了 |
+| CNN  | 方向可变单目 | 随机初始化 | 1-0-50 | 凑合，会转圈撞墙  | 旋转逻辑 (1)  |
+| CNN  | 方向固定四目 | 固定初始化 | ？      | 还可以       | 奖励设置 (2)  |
+| RNN  | 方向固定四目 | 固定初始化 | ?      | 不稳定，最终还可以 |           |
+| RNN  | 方向可变单目 | 随机初始化 |        | 不稳定，最终凑合  |           |
+
+全都不咋地
+
+
+
+## 2.2 初步 -> 完整的 gleam baseline
+
+### 2.2.1 更大的patch
+
+![[截屏2026-01-28 18.15.07.png]]
+
+- 继续用简化的设定训练一下
+	- 16 * 16 的奖励 grid
+		- 新 grid 奖励 1.0
+		- step reward -0.01
+		- 撞墙 reward -5.0
+	- 单视角可转向深度图序列 -简化- 四个角度深度图输入
+	- 动作空间 `(-1, 1) (-1, 1)`
+	- 相机可见覆盖格子 -简化- 相机自身位置身处格子
+- 训练效果如下：很不错！
+
+![[截屏2026-01-28 18.22.49.png]]
+
+### 2.2.2 单视角可转向深度输入 + RNN
+
+- 这个实验之前做了效果不好，换成大 patch 之后也许会好但估计也好不了多少，没有再复现，计划直接去写 CNN + maxpooling
+
+### 2.2.3 长距离 action
+
+- 在进行 CNN + maxpooling 这种长序列处理问题之前，需要改成更长的 action 逻辑，否则如果episode 长度 500，就需要计算 500 次 CNN，效率太差了
+
+- 我需要比较好的非短距离动作表示
+	- 比较大取值范围的 dx 和 dy
+	- 直接预测下一个 key frame 的相机角度
+
+- Q：相机角度定义——归根结底相机角度是为了转换为一个四元数的，当锁死相机俯仰角的时候，四元数形如 `(w, 0, 0, z)` 
+	1. 直接预测角度 `(-pi, pi)`  面临角度定义不连续的问题，因为 0 和 360 在角度定义上一样
+		- 如果以 `mod pi` 意义上预测角度输出就更不现实了，神经网络可能难以收敛（loss 超平面凹凸不平……）
+	2. 预测 w 和 z ？关于预测目标 gemini 给出的解释如下
+
+| 方案                             | 预测目标                                             | 维度  | 范围限制      | 核心优缺点                                                                      |
+| ------------------------------ | ------------------------------------------------ | --- | --------- | -------------------------------------------------------------------------- |
+| A. 预测 $w, z$                   | $(\cos \frac{\theta}{2}, \sin \frac{\theta}{2})$ | 2   | 需归一化      | 双重覆盖问题：$\theta$ 增加 $360^\circ$ 时，四元数只转了 $180^\circ$。存在 $q$ 和 $-q$ 的二义性。    |
+| B. 预测 $\cos\theta, \sin\theta$ | $(\cos \theta, \sin \theta)$                     | 2   | 需归一化      | 最推荐：一一对应，连续性最好。网络输出的一周对应物理旋转的一周。                                           |
+| C. 只预测 $\cos\theta$            | $\cos \theta$                                    | 1   | $[-1, 1]$ | 致命缺陷：存在多值问题。无法区分 $\theta$ 和 $-\theta$（比如无法区分左转 $30^\circ$ 和右转 $30^\circ$）。 |
+
+选择 B，由于没想出来怎么只做一个长距离的 RNN？不如直接做 CNN + maxpooling
+
+### 2.2.4 完整的 CNN + max pooling
+
+![[Pasted image 20260128184633.png]]
+
+
+![[7e8f6e980431fb34ba97a9cedda11a66.png]]
+
+> 讨论改进方向：
+> entropy coef 调参数
+> 改成 sight 而不只是 location 奖励
+> 多训几步
+> 
